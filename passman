@@ -124,6 +124,29 @@ if [[ $(wl-paste -n 2>/dev/null) == "pw" ]]; then wl-copy --clear; fi
   disown
   echo "Copied $name. Clears in $CLIP_SECONDS s."
 }
+
+cmd_note() {
+  local name=$1 line
+  need_store
+  line=$(decrypt | awk -v n="$name" '$1 == n { print; exit}') # ypu can find this line in cmd_get too but this one prints the whole line in memory, but technicaly the role is the same as the one in cmd_get since it search for the line by the name
+  if [[ -z $line ]]; then die "no entry named '$name'"; fi 
+  printf '%s\n' "$line" | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }'
+}
+
+cmd_edit() {
+  local tmp before after
+  need_store
+  tmp=$(mktemp -p "${XDG_RUNTIME_DIR:-/dev/shm}" passman.XXXXXX)
+  trap "rm -f '$tmp'" EXIT 
+  decrypt > "$tmp"
+  before=$(sha256sum < "$tmp")
+  nvim -n -i NONE "$tmp"
+  after=$(sha256sum < "$tmp")
+  if [[ $before == "$after" ]]; then echo "no changes"; return; fi
+  encrypt_to_store < "$tmp"
+  echo "store updated"
+}
+
 # ------- new commands go above this line ------
 
 [[ $# -ge 1  ]] || usage 
@@ -133,6 +156,8 @@ case $1 in
   -l) cmd_list ;;
   -a) [[ $# -eq 2 ]] || usage; cmd_add "$2" ;;
   -x) cmd_lock ;;
+  -n) [[ $# -eq 2 ]] || usage; cmd_note "$2" ;;
+  -e) cmd_edit ;;
   -*) usage ;;
   *) [[ $# -eq 1 ]] || usage; cmd_get "$1" ;;
 esac
