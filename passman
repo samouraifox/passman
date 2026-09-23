@@ -6,7 +6,10 @@ set -euo pipefail
 STORE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/passman"  #Setting the storage directory variable
 STORE="$STORE_DIR/store.age"                               # Setting the storage file variable 
 CLIP_SECONDS=30                                            #Setting the time a password stays in the wl-clipboard
-
+KEY="$STORE_DIR/key.age"
+RECIPIENT="$STORE_DIR/recipient.txt"
+CACHE_SECONDS=600
+KEYRING_NAME=passman 
 
 # This is the error handling part 
 die()  { printf 'passman: %s\n' "$*" >&2; exit 1; }  # This function is for security purposes: If the script throws an error, it will go to stderr and not to the pipe so we will use this fucntion for that 
@@ -18,34 +21,94 @@ usage(){
          passman -a NAME        Add an entry
          passman -e             Edit the store
          passman -i             Create an empty store
+         passman -x             Forget the cached key now
 USAGE
   exit 1
   }  # Usage function of packman Wich sends the text to stderr and not stdout 
 
-for tool in age wl-copy wl-paste awk; do
+for tool in age age-keygen keyctl wl-copy wl-paste awk; do
   command -v "$tool" >/dev/null || die "missing tool: $tool"
 done   # This loop verifies if you got all of the tooling you need if not it throws an error message 
 
-need_store() { [[ -f $STORE  ]] || die "no store at $STORE (run: passman -i)"; }  # FUnction that throws an error message in case there is no store.age file
+need_store() {
+  [[ -f $STORE && -f $KEY && -f $RECIPIENT ]] || die "no store in $STORE_DIR (run: passman -i)"
+}
 
-# PLain text goes to stdout. age asks for the passphrase on the terminal 
-decrypt() { age -d "$STORE"; }
 
-# Plain text comes from stdin. age asks the passphrase two times 
+# Prints the private key. From the keyring if it is there;
+# Otherwise asks the passphrase once, then caches it.
+unlock() {
+  local id key
+  if id=$(keyctl search @u user "$KEYRING_NAME" 2>/dev/null); then 
+    keyctl pipe "$id"
+    return
+  fi
+  key=$(age -d "$KEY")
+  id=$(printf '%s' "$key" | keyctl padd user "$KEYRING_NAME" @u)
+  keyctl timeout "$id" "$CACHE_SECONDS"
+  printf '%s' "$key"
+}
+
+# Plain text goes to stdout 
+decrypt() {
+  local key
+  key=$(unlock) || return 1 
+  printf '%s' "$key" | age -d -i /dev/stdin "$STORE"
+}
+
+# Plain text comes from stdin. Encrypts to the public key: never asks anything
 encrypt_to_store() {
   local tmp="$STORE.tmp"
-  age -e -p -o "$tmp"
+  age -r "$(cat "$RECIPIENT")" -o "$tmp"
   chmod 600 "$tmp"
   if [[ -f $STORE ]]; then mv -f "$STORE" "$STORE.bak"; fi 
   mv -f "$tmp" "$STORE"
 }
 
 cmd_init() {
-  [[ -f $STORE ]] && die "Store already exists: $STORE"
+  local key
+  [[ -f $STORE || -f $KEY ]] && die "store already exists in $STORE_DIR"
   mkdir -p "$STORE_DIR"
   chmod 700 "$STORE_DIR"
+  key=$(age-keygen 2>/dev/null)
+  printf '%s\n' "$key" | age-keygen -y > "$RECIPIENT"
+  printf '%s\n' "$key" | age -p -o "$KEY"
+  chmod 600 "$KEY"
   printf '# name password note\n' | encrypt_to_store
-  echo "created $STORE"
+  echo "created $STORE_DIR"
+}
+
+cmd_lock() {
+  local id 
+if id=$(keyctl search @u user "$KEYRING_NAME" 2>/dev/null); then 
+  keyctl unlink "$id" @u >/dev/null
+  echo "locked"
+else 
+  echo "already locked"
+fi 
+}
+
+cmd_list() {
+  need_store
+  decrypt | awk '!/^#/ && NF { print $1 }'
+}
+
+cmd_add() {
+  local name=$1 plain pw1 pw2 note 
+  need_store
+  if [[ $name == *[[:space:]]* ]]; then die "the name must not contain spaces"; fi 
+  plain=$(decrypt)
+  if printf '%s\n' "$plain" | awk -v n="$name" '$1 == n { found = 1 } END { exit !found }'; then
+    die "entry '$name' exists (use -e to change it)"
+  fi 
+  read -rsp "password for $name: " pw1; echo
+  read -rsp "again: " pw2; echo 
+  if [[ $pw1 != "$pw2" ]]; then die "the two passwords differ"; fi 
+  if [[ -z $pw1 ]]; then die "empty password"; fi 
+  if [[ $pw1 == *[[:space:]]* ]]; then die "the password must not contain spaces"; fi 
+  read -rp "note (user, address; optional): " note 
+  printf '%s\n%s %s %s\n' "$plain" "$name" "$pw1" "$note" | encrypt_to_store 
+  echo "added $name"
 }
 
 # ------- new commands go above this line ------
@@ -54,5 +117,10 @@ cmd_init() {
 case $1 in 
   -i) cmd_init ;;
   -h|--help) usage ;;
+  -l) cmd_list ;;
+  -a) [[ $# -eq 2 ]] || usage; cmd_add "$2" ;;
+  -x) cmd_lock ;;
   *) die "not built yet: $1" ;;
 esac
+
+
