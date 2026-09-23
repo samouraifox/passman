@@ -1,0 +1,58 @@
+#!/bin/bash
+# passman -- a password manager built on age and wl-clipboard.
+#
+set -euo pipefail
+
+STORE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/passman"  #Setting the storage directory variable
+STORE="$STORE_DIR/store.age"                               # Setting the storage file variable 
+CLIP_SECONDS=30                                            #Setting the time a password stays in the wl-clipboard
+
+
+# This is the error handling part 
+die()  { printf 'passman: %s\n' "$*" >&2; exit 1; }  # This function is for security purposes: If the script throws an error, it will go to stderr and not to the pipe so we will use this fucntion for that 
+usage(){
+  cat >&2 <<'USAGE'
+  usage: passman NAME           Copy the password for NAME to the clipboard 
+         passman -n NAME        Print the note for NAME
+         passman -l             List the names
+         passman -a NAME        Add an entry
+         passman -e             Edit the store
+         passman -i             Create an empty store
+USAGE
+  exit 1
+  }  # Usage function of packman Wich sends the text to stderr and not stdout 
+
+for tool in age wl-copy wl-paste awk; do
+  command -v "$tool" >/dev/null || die "missing tool: $tool"
+done   # This loop verifies if you got all of the tooling you need if not it throws an error message 
+
+need_store() { [[ -f $STORE  ]] || die "no store at $STORE (run: passman -i)"; }  # FUnction that throws an error message in case there is no store.age file
+
+# PLain text goes to stdout. age asks for the passphrase on the terminal 
+decrypt() { age -d "$STORE"; }
+
+# Plain text comes from stdin. age asks the passphrase two times 
+encrypt_to_store() {
+  local tmp="$STORE.tmp"
+  age -e -p -o "$tmp"
+  chmod 600 "$tmp"
+  if [[ -f $STORE ]]; then mv -f "$STORE" "$STORE.bak"; fi 
+  mv -f "$tmp" "$STORE"
+}
+
+cmd_init() {
+  [[ -f $STORE ]] && die "Store already exists: $STORE"
+  mkdir -p "$STORE_DIR"
+  chmod 700 "$STORE_DIR"
+  printf '# name password note\n' | encrypt_to_store
+  echo "created $STORE"
+}
+
+# ------- new commands go above this line ------
+
+[[ $# -ge 1  ]] || usage 
+case $1 in 
+  -i) cmd_init ;;
+  -h|--help) usage ;;
+  *) die "not built yet: $1" ;;
+esac
