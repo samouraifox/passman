@@ -111,6 +111,19 @@ cmd_add() {
   echo "added $name"
 }
 
+cmd_get() {
+  local name=$1 pw 
+  need_store
+  pw=$(decrypt |awk -v n="$name" '$1 == n {print $2; exit}')
+  if [[ -z $pw ]]; then die "no entry named '$name'"; fi 
+  printf '%s' "$pw" | wl-copy --sensitive
+  (
+    sleep "$CLIP_SECONDS"
+if [[ $(wl-paste -n 2>/dev/null) == "pw" ]]; then wl-copy --clear; fi 
+  ) >/dev/null 2>&1 &
+  disown
+  echo "Copied $name. Clears in $CLIP_SECONDS s."
+}
 # ------- new commands go above this line ------
 
 [[ $# -ge 1  ]] || usage 
@@ -120,7 +133,8 @@ case $1 in
   -l) cmd_list ;;
   -a) [[ $# -eq 2 ]] || usage; cmd_add "$2" ;;
   -x) cmd_lock ;;
-  *) die "not built yet: $1" ;;
+  -*) usage ;;
+  *) [[ $# -eq 1 ]] || usage; cmd_get "$1" ;;
 esac
 
 
